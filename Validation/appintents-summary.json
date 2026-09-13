@@ -1,0 +1,11 @@
+{
+  "actions": [
+    "CheckDataLimitIntent",
+    "GetCellularUsageIntent",
+    "ShouldBlockCellularIntent"
+  ],
+  "entities": [
+    "CellularUsageEntity"
+  ],
+  "autoShortcutCount": 3
+}
