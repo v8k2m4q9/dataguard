@@ -10,7 +10,7 @@ struct DashboardView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 HStack {
-                    Label("사용량 단계 (추정)", systemImage: "gauge.with.dots.needle")
+                    Text("사용량 단계 (추정)")
                     Spacer()
                     Text(model.report?.status.rawValue.uppercased() ?? "UNKNOWN")
                         .font(.headline.monospaced()).padding(.horizontal, 14).padding(.vertical, 8)
