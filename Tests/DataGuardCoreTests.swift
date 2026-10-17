@@ -32,13 +32,15 @@ final class DataGuardCoreTests: XCTestCase {
     func testIndependentDirectionalResetDoesNotHideBehindOtherDirection() throws {
         var u = try calibrated(1000, 1000)
         u.ingest(snapshot(10, 5000), settings: settings(), now: date.addingTimeInterval(10), uptime: 1010)
-        XCTAssertEqual(u.usedBytes, 4010)
+        XCTAssertEqual(u.usedBytes, 4000)
         XCTAssertTrue(u.needsReview)
+        u.ingest(snapshot(30, 5100), settings: settings(), now: date.addingTimeInterval(20), uptime: 1020)
+        XCTAssertEqual(u.usedBytes, 4120)
     }
     func test32BitWrapRetainsReviewSeparatelyFromUsageThreshold() throws {
         var u = try calibrated(UInt64(UInt32.max) - 10, 0)
         u.ingest(snapshot(10, 0), settings: settings(), now: date.addingTimeInterval(1), uptime: 1001)
-        XCTAssertEqual(u.usedBytes, 10) // Deliberately a lower bound, not an invented exact wrap.
+        XCTAssertEqual(u.usedBytes, 0) // Rebase the incomparable direction instead of guessing.
         let report = UsageReport.make(settings: settings(), usage: u)
         XCTAssertFalse(report.shouldBlock)
         XCTAssertTrue(report.requiresReview)
@@ -53,17 +55,23 @@ final class DataGuardCoreTests: XCTestCase {
         XCTAssertEqual(u.usedBytes, 3_000_000_200)
         XCTAssertTrue(u.needsReview) // Sticky until explicit reconciliation.
     }
-    func testRecreatedInterfaceCountsCurrentAndRequestsReview() throws {
-        var u = try calibrated()
+    func testRecreatedInterfacePreservesTotalAndRebases() throws {
+        var u = try calibrated(used: 120_000_000)
         u.ingest(snapshot(500, 600, index: 2), settings: settings(), now: date.addingTimeInterval(10), uptime: 1010)
-        XCTAssertEqual(u.usedBytes, 1100)
+        XCTAssertEqual(u.usedBytes, 120_000_000)
+        XCTAssertEqual(u.lastIncreaseBytes, 0)
         XCTAssertTrue(u.needsReview)
+        u.ingest(snapshot(550, 650, index: 2), settings: settings(), now: date.addingTimeInterval(20), uptime: 1020)
+        XCTAssertEqual(u.usedBytes, 120_000_100)
     }
-    func testRebootEvenWhenCountersIncrease() throws {
-        var u = try calibrated()
+    func testUptimeDecreasePreservesTotalAndRebasesEvenWhenCountersIncrease() throws {
+        var u = try calibrated(used: 120_000_000)
         u.ingest(snapshot(1000, 2000), settings: settings(), now: date.addingTimeInterval(10), uptime: 5)
-        XCTAssertEqual(u.usedBytes, 3000)
+        XCTAssertEqual(u.usedBytes, 120_000_000)
+        XCTAssertEqual(u.lastIncreaseBytes, 0)
         XCTAssertTrue(u.needsReview)
+        u.ingest(snapshot(1100, 2200), settings: settings(), now: date.addingTimeInterval(20), uptime: 15)
+        XCTAssertEqual(u.usedBytes, 120_000_300)
     }
     func testLongGapAndClockChangeRequireReview() throws {
         var u = try calibrated()
@@ -72,6 +80,31 @@ final class DataGuardCoreTests: XCTestCase {
         u = try calibrated()
         u.ingest(snapshot(100, 200), settings: settings(), now: date.addingTimeInterval(-100), uptime: 1010)
         XCTAssertTrue(u.needsReview)
+    }
+    func testWifiGrowthAndRepeatedTimeGapsDoNotIncreaseSelectedCellularUsage() throws {
+        var s = settings(); s.selectedInterfaces = ["pdp_ip0"]
+        let cell = InterfaceSnapshot(name: "pdp_ip0", index: 7, rx: 250_000_000, tx: 50_000_000)
+        var u = UsageStore()
+        try u.reconcile(bytes: 300_000_000, interfaces: [cell], settings: s, now: date, uptime: 1000)
+        for n in 1...6 {
+            let wifi = InterfaceSnapshot(name: "en0", index: 16, rx: UInt64(n) * 500_000_000, tx: 10_000_000)
+            // Wall time moves much further than uptime; cellular counters are unchanged.
+            u.ingest([cell, wifi], settings: s, now: date.addingTimeInterval(Double(n) * 3600), uptime: 1000 + Double(n) * 10)
+            XCTAssertEqual(u.usedBytes, 300_000_000)
+            XCTAssertEqual(u.lastIncreaseBytes, 0)
+            XCTAssertFalse(UsageReport.make(settings: s, usage: u).shouldBlock)
+        }
+        XCTAssertTrue(u.needsReview)
+    }
+    func testTimeDiscontinuityCountsOnlyNewCellularBytes() throws {
+        var u = try calibrated(100_000_000, 20_000_000, used: 120_000_000)
+        u.ingest(snapshot(103_000_000, 21_000_000), settings: settings(), now: date.addingTimeInterval(3600), uptime: 1010)
+        XCTAssertEqual(u.usedBytes, 124_000_000)
+        XCTAssertEqual(u.lastIncreaseBytes, 4_000_000)
+        XCTAssertTrue(u.needsReview)
+        u.ingest(snapshot(103_000_000, 21_000_000), settings: settings(), now: date.addingTimeInterval(-100), uptime: 1020)
+        XCTAssertEqual(u.usedBytes, 124_000_000)
+        XCTAssertEqual(u.lastIncreaseBytes, 0)
     }
     func testCalibratedUsageSurvivesTestModeAndLongGap() throws {
         var u = try calibrated(used: 300_000_000)

@@ -32,12 +32,16 @@ struct UsageStore: Codable, Sendable {
             markUncertain("청구 기간이 바뀌었습니다. 경계에 걸친 증가량을 새 기간에 포함했으므로 사용량을 확인하세요.")
         }
         cycleStart = start
-        var restarted = false
+        var uptimeWentBackwards = false
         if let lastSampleAt, let lastUptime {
             let elapsed = now.timeIntervalSince(lastSampleAt)
-            restarted = uptime < lastUptime || abs((uptime - lastUptime) - elapsed) > 5
-            if restarted {
-                markUncertain("재부팅 또는 시간 변경이 감지되었습니다. 복구할 수 없는 사용량이 있을 수 있습니다.")
+            uptimeWentBackwards = uptime < lastUptime
+            if uptimeWentBackwards {
+                markUncertain("기기 가동 시간이 감소했습니다. 기존 누적량을 보존하고 측정 기준을 다시 저장합니다. 공백 사용량은 확인이 필요합니다.")
+            } else if abs((uptime - lastUptime) - elapsed) > 5 {
+                // Wall-clock and uptime differences do not prove that counters restarted.
+                // Never add a lifetime counter merely because the clocks disagree.
+                markUncertain("측정 시각과 기기 가동 시간의 차이가 감지되었습니다. 카운터 증가분만 반영하며 공백 중 누락 가능성이 있습니다.")
             } else if elapsed > 900 {
                 markUncertain("15분 이상 측정 공백입니다. 카운터 순환·재생성으로 누락된 사용량이 있을 수 있습니다.")
             }
@@ -55,16 +59,17 @@ struct UsageStore: Codable, Sendable {
                 continue // Keep the previous baseline; never silently clear accumulated usage.
             }
             if let previous = baselines[name] {
-                if restarted || previous.index != current.index {
-                    increase += rx + tx
-                    markUncertain("인터페이스 재생성·재부팅 이후의 카운터를 더했습니다. 통신사 사용량으로 보정하세요.")
+                if uptimeWentBackwards || previous.index != current.index {
+                    // Continuity is unknown. Rebase below instead of treating the entire
+                    // current counter as new traffic and possibly counting it twice.
+                    markUncertain("기기 가동 시간 또는 인터페이스가 바뀌어 측정 기준을 다시 저장했습니다. 기존 누적량은 유지했으며 비교 불가능한 구간은 합산하지 않았습니다. 통신사 사용량과 비교하세요.")
                 } else {
-                    // Treat decreases as a reset lower bound, not a guessed 32-bit wrap.
-                    // A wrap and a reset cannot be distinguished; require reconciliation.
-                    increase += rx >= previous.rx ? rx - previous.rx : rx
-                    increase += tx >= previous.tx ? tx - previous.tx : tx
+                    // Count only comparable, nondecreasing directions. A decrease may
+                    // be a reset or wrap, so do not invent traffic for that direction.
+                    increase += rx >= previous.rx ? rx - previous.rx : 0
+                    increase += tx >= previous.tx ? tx - previous.tx : 0
                     if rx < previous.rx || tx < previous.tx {
-                        markUncertain("카운터 감소: 초기화와 32비트 순환을 구분할 수 없습니다. 사용량 보정이 필요합니다.")
+                        markUncertain("카운터 감소: 초기화와 32비트 순환을 구분할 수 없어 감소한 방향은 새 기준만 저장했습니다. 누락된 사용량은 통신사 값과 비교하세요.")
                     }
                 }
             } else {
